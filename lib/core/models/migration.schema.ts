@@ -69,6 +69,15 @@ export const MigrationReferenceSchema = z
     })
     .readonly();
 
+export const ScheduleSchema = z
+    .strictObject({
+        publish_time: z.string().datetime().optional().readonly(),
+        publish_display_timezone: z.string().optional().readonly(),
+        unpublish_time: z.string().datetime().optional().readonly(),
+        unpublish_display_timezone: z.string().optional().readonly()
+    })
+    .readonly();
+
 /**
  * ZodType is needed to be specified here due to the use of 'lazy' & circular dependency between types
  * Otherwise TS has no way of statically inferring the type
@@ -123,7 +132,8 @@ export const MigrationElementSchema = z
 export const MigrationItemVersionSchema = z
     .strictObject({
         workflow_step: MigrationReferenceSchema,
-        elements: MigrationElementsSchema
+        elements: MigrationElementsSchema,
+        schedule: ScheduleSchema
     })
     .readonly();
 

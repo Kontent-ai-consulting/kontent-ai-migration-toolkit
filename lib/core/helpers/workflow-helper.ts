@@ -33,18 +33,13 @@ export function workflowHelper(workflows: readonly Readonly<WorkflowModels.Workf
         return getWorkflow({
             errorMessage: [
                 `Workflow with codename '${chalk.red(workflowCodename)}' does not exist in target project`,
-                `Available workflows are (${workflows.length}): ${workflows
-                    .map((m) => chalk.cyan(m.codename))
-                    .join(', ')}`
+                `Available workflows are (${workflows.length}): ${workflows.map((m) => chalk.cyan(m.codename)).join(', ')}`
             ].join(', '),
             match: (workflow) => workflow.codename.toLowerCase() === workflowCodename.toLowerCase()
         });
     };
 
-    const getWorkflowStepByCodename = (
-        workflow: Readonly<WorkflowModels.Workflow>,
-        stepCodename: string
-    ): WorkflowStep => {
+    const getWorkflowStepByCodename = (workflow: Readonly<WorkflowModels.Workflow>, stepCodename: string): WorkflowStep => {
         return getWorkflowStep(workflow, {
             errorMessage: [
                 `Workflow step with codename '${chalk.red(stepCodename)}' does not exist in target project`,

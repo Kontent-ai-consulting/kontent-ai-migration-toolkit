@@ -1,5 +1,5 @@
 import { ManagementClient, SharedModels, WorkflowModels } from '@kontent-ai/management-sdk';
-import { Logger, runMapiRequestAsync, LogSpinnerData, MigrationItem, workflowHelper } from '../../core/index.js';
+import { Logger, runMapiRequestAsync, LogSpinnerData, MigrationItem, workflowHelper, MigrationItemVersion } from '../../core/index.js';
 
 export function workflowImporter(config: {
     logger: Logger;
@@ -62,6 +62,64 @@ export function workflowImporter(config: {
                 throw error;
             }
         }
+    };
+
+    const schedulePublishLanguageVariantAsync = async (data: {
+        readonly logSpinner: LogSpinnerData;
+        readonly migrationItem: MigrationItem;
+        readonly schedule: {
+            readonly publish_time: string;
+            readonly publish_display_timezone: string;
+        };
+    }): Promise<void> => {
+        await runMapiRequestAsync({
+            logger: config.logger,
+            func: async () =>
+                (
+                    await config.managementClient
+                        .publishLanguageVariant()
+                        .byItemCodename(data.migrationItem.system.codename)
+                        .byLanguageCodename(data.migrationItem.system.language.codename)
+                        .withData({
+                            scheduled_to: data.schedule.publish_time,
+                            display_timezone: data.schedule.publish_display_timezone
+                        })
+                        .toPromise()
+                ).data,
+            action: 'schedulePublish',
+            type: 'languageVariant',
+            logSpinner: data.logSpinner,
+            itemName: `${data.migrationItem.system.codename} (${data.migrationItem.system.language.codename})`
+        });
+    };
+
+    const scheduleUnpublishLanguageVariantAsync = async (data: {
+        readonly logSpinner: LogSpinnerData;
+        readonly migrationItem: MigrationItem;
+        readonly schedule: {
+            readonly unpublish_time: string;
+            readonly unpublish_display_timezone: string;
+        };
+    }): Promise<void> => {
+        await runMapiRequestAsync({
+            logger: config.logger,
+            func: async () =>
+                (
+                    await config.managementClient
+                        .unpublishLanguageVariant()
+                        .byItemCodename(data.migrationItem.system.codename)
+                        .byLanguageCodename(data.migrationItem.system.language.codename)
+                        .withData({
+                            scheduled_to: data.schedule.unpublish_time,
+                            display_timezone: data.schedule.unpublish_display_timezone
+                        })
+                        .toPromise()
+                ).data,
+            action: 'scheduleUnpublish',
+            type: 'languageVariant',
+            logSpinner: data.logSpinner,
+            itemName: `${data.migrationItem.system.codename} (${data.migrationItem.system.language.codename})`
+        });
     };
 
     const archiveLanguageVariantAsync = async (data: {
@@ -136,15 +194,35 @@ export function workflowImporter(config: {
         readonly workflowCodename: string;
         readonly stepCodename: string;
         readonly migrationItem: MigrationItem;
+        readonly migrationItemVersion: MigrationItemVersion;
     }): Promise<void> => {
-        if (workflowHelper(config.workflows).isPublishedStepByCodename(data.stepCodename)) {
+        const helper = workflowHelper(config.workflows);
+
+        if (data.migrationItemVersion.schedule.unpublish_time && data.migrationItemVersion.schedule.unpublish_display_timezone) {
+            // publish the language variant first before scheduling unpublish
             await publishLanguageVariantAsync(data);
-        } else if (workflowHelper(config.workflows).isScheduledStepByCodename(data.stepCodename)) {
-            data.logSpinner({
-                type: 'skip',
-                message: `${data.migrationItem.system.codename} (${data.migrationItem.system.language.codename}) -> Skipping scheduled workflow step assignment`
+            await scheduleUnpublishLanguageVariantAsync({
+                logSpinner: data.logSpinner,
+                migrationItem: data.migrationItem,
+                schedule: {
+                    unpublish_time: data.migrationItemVersion.schedule.unpublish_time,
+                    unpublish_display_timezone: data.migrationItemVersion.schedule.unpublish_display_timezone
+                }
             });
-        } else if (workflowHelper(config.workflows).isArchivedStepByCodename(data.stepCodename)) {
+        } else if (data.migrationItemVersion.schedule.publish_time && data.migrationItemVersion.schedule.publish_display_timezone) {
+            // unpublish language variant first before scheduling publish
+            await unpublishLanguageVariantAsync(data);
+            await schedulePublishLanguageVariantAsync({
+                logSpinner: data.logSpinner,
+                migrationItem: data.migrationItem,
+                schedule: {
+                    publish_time: data.migrationItemVersion.schedule.publish_time,
+                    publish_display_timezone: data.migrationItemVersion.schedule.publish_display_timezone
+                }
+            });
+        } else if (helper.isPublishedStepByCodename(data.stepCodename)) {
+            await publishLanguageVariantAsync(data);
+        } else if (helper.isArchivedStepByCodename(data.stepCodename)) {
             await unpublishLanguageVariantAsync(data);
             await archiveLanguageVariantAsync(data);
         } else {

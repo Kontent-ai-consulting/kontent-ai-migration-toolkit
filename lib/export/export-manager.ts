@@ -19,7 +19,8 @@ import {
     findRequired,
     Writeable,
     MigrationItemsSchema,
-    MigrationAssetsSchema
+    MigrationAssetsSchema,
+    MigrationItemVersion
 } from '../core/index.js';
 import { exportTransforms } from '../translation/index.js';
 import { exportContextFetcherAsync } from './context/export-context-fetcher.js';
@@ -45,8 +46,14 @@ export function exportManager(config: ExportConfig) {
                 }
             },
             versions: exportItem.versions.map((version) => {
-                return {
+                return <MigrationItemVersion>{
                     elements: getMigrationElements(context, exportItem.contentType, version.languageVariant.elements),
+                    schedule: {
+                        publish_time: version.languageVariant.schedule.publishTime ?? undefined,
+                        publish_display_timezone: version.languageVariant.schedule.publishDisplayTimezone ?? undefined,
+                        unpublish_display_timezone: version.languageVariant.schedule.unpublishDisplayTimezone ?? undefined,
+                        unpublish_time: version.languageVariant.schedule.unpublishTime ?? undefined
+                    },
                     workflow_step: {
                         codename: version.workflowStepCodename
                     }

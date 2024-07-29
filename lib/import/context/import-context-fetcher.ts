@@ -3,7 +3,9 @@ import {
     AssetStateInTargetEnvironmentByCodename,
     ItemStateInTargetEnvironmentByCodename,
     LanguageVariantStateInTargetEnvironmentByCodename,
+    LanguageVariantWorkflowState,
     MigrationItem,
+    WorkflowStep,
     findRequired,
     is404Error,
     isNotUndefined,
@@ -12,12 +14,7 @@ import {
     runMapiRequestAsync,
     workflowHelper
 } from '../../core/index.js';
-import {
-    GetFlattenedElementByCodenames,
-    ImportContext,
-    ImportContextConfig,
-    ImportContextEnvironmentData
-} from '../import.models.js';
+import { GetFlattenedElementByCodenames, ImportContext, ImportContextConfig, ImportContextEnvironmentData } from '../import.models.js';
 import { ExtractItemByCodename, itemsExtractionProcessor } from '../../translation/index.js';
 import chalk from 'chalk';
 
@@ -49,11 +46,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
     const environmentData = await getEnvironmentDataAsync();
 
     const getElement = () => {
-        const getFlattenedElement: GetFlattenedElementByCodenames = (
-            contentTypeCodename,
-            elementCodename,
-            sourceType
-        ) => {
+        const getFlattenedElement: GetFlattenedElementByCodenames = (contentTypeCodename, elementCodename, sourceType) => {
             const contentType = findRequired(
                 environmentData.types,
                 (type) => type.contentTypeCodename === contentTypeCodename,
@@ -65,9 +58,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                 (element) => element.codename === elementCodename,
                 `Element type with codename '${chalk.red(elementCodename)}' was not found in content type '${chalk.red(
                     contentTypeCodename
-                )}'. Available elements are '${contentType.elements
-                    .map((element) => chalk.yellow(element.codename))
-                    .join(', ')}'`
+                )}'. Available elements are '${contentType.elements.map((element) => chalk.yellow(element.codename)).join(', ')}'`
             );
 
             if (sourceType !== element.type) {
@@ -84,9 +75,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         return getFlattenedElement;
     };
 
-    const getLanguageVariantsAsync = async (
-        migrationItems: readonly MigrationItem[]
-    ): Promise<readonly LanguageVariantWrapper[]> => {
+    const getLanguageVariantsAsync = async (migrationItems: readonly MigrationItem[]): Promise<readonly LanguageVariantWrapper[]> => {
         return (
             await processItemsAsync<MigrationItem, LanguageVariantWrapper | undefined>({
                 action: 'Fetching language variants',
@@ -152,10 +141,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                     try {
                         return await runMapiRequestAsync({
                             logger: config.logger,
-                            func: async () =>
-                                (
-                                    await config.managementClient.viewContentItem().byItemCodename(codename).toPromise()
-                                ).data,
+                            func: async () => (await config.managementClient.viewContentItem().byItemCodename(codename).toPromise()).data,
                             action: 'view',
                             type: 'contentItem',
                             logSpinner: logSpinner,
@@ -173,9 +159,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         ).filter(isNotUndefined);
     };
 
-    const getAssetsByCodenamesAsync = async (
-        assetCodenames: ReadonlySet<string>
-    ): Promise<readonly AssetModels.Asset[]> => {
+    const getAssetsByCodenamesAsync = async (assetCodenames: ReadonlySet<string>): Promise<readonly AssetModels.Asset[]> => {
         return (
             await processItemsAsync<string, Readonly<AssetModels.Asset> | undefined>({
                 action: 'Fetching assets',
@@ -192,10 +176,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                     try {
                         return await runMapiRequestAsync({
                             logger: config.logger,
-                            func: async () =>
-                                (
-                                    await config.managementClient.viewAsset().byAssetCodename(codename).toPromise()
-                                ).data,
+                            func: async () => (await config.managementClient.viewAsset().byAssetCodename(codename).toPromise()).data,
                             action: 'view',
                             type: 'asset',
                             logSpinner: logSpinner,
@@ -227,30 +208,59 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
 
             const variantWorkflowId = variant?.languageVariant?.workflow?.workflowIdentifier?.id;
             const variantStepId = variant?.languageVariant?.workflow?.stepIdentifier?.id;
-
-            const workflow = environmentData.workflows.find((workflow) => workflow.id === variantWorkflowId);
+            const { workflow, step } = workflowHelper(environmentData.workflows).getWorkflowAndStep({
+                workflowMatcher: {
+                    errorMessage: `Could not workflow with id '${chalk.red(variantWorkflowId)}' in target project`,
+                    match: (workflow) => workflow.id == variantWorkflowId
+                },
+                stepMatcher: {
+                    errorMessage: `Could not workflow step with id '${chalk.red(variantStepId)}' in workflow '${chalk.yellow(
+                        variantWorkflowId
+                    )}'`,
+                    match: (step) => step.id == variantStepId
+                }
+            });
 
             return {
                 itemCodename: migrationItem.system.codename,
                 languageCodename: migrationItem.system.language.codename,
                 languageVariant: variant?.languageVariant,
                 workflow: workflow,
-                step: workflow
-                    ? workflowHelper(environmentData.workflows).getWorkflowStep(workflow, {
-                          errorMessage: `Could not workflow step with id '${chalk.red(
-                              variantStepId
-                          )}' in workflow '${chalk.yellow(workflow.codename)}'`,
-                          match: (step) => step.id == variantStepId
-                      })
-                    : undefined,
+                workflowState: getWorkflowState(step, variant?.languageVariant),
                 state: variant ? 'exists' : 'doesNotExists'
             };
         });
     };
 
-    const getItemStatesAsync = async (
-        itemCodenames: ReadonlySet<string>
-    ): Promise<readonly ItemStateInTargetEnvironmentByCodename[]> => {
+    const getWorkflowState = (
+        step: Readonly<WorkflowStep>,
+        variant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined
+    ): LanguageVariantWorkflowState => {
+        if (!variant) {
+            return 'n/a';
+        }
+
+        const helper = workflowHelper(environmentData.workflows);
+
+        // order of checks is important as scheduled publish / unpublish state
+        if (variant.schedule.publishTime && variant.schedule.publishDisplayTimezone) {
+            return 'scheduledPublish';
+        }
+
+        if (variant.schedule.unpublishTime && variant.schedule.unpublishDisplayTimezone) {
+            return 'scheduledUnpublish';
+        }
+
+        if (helper.isPublishedStepByCodename(step.codename)) {
+            return 'published';
+        }
+        if (helper.isArchivedStepByCodename(step.codename)) {
+            return 'archived';
+        }
+        return 'draft';
+    };
+
+    const getItemStatesAsync = async (itemCodenames: ReadonlySet<string>): Promise<readonly ItemStateInTargetEnvironmentByCodename[]> => {
         const items = await getContentItemsByCodenamesAsync(itemCodenames);
 
         return Array.from(itemCodenames).map<ItemStateInTargetEnvironmentByCodename>((codename) => {
@@ -311,17 +321,13 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         ]);
 
         // prepare state of objects in target environment
-        const itemStates: readonly ItemStateInTargetEnvironmentByCodename[] = await getItemStatesAsync(
-            itemCodenamesToCheckInTargetEnv
-        );
+        const itemStates: readonly ItemStateInTargetEnvironmentByCodename[] = await getItemStatesAsync(itemCodenamesToCheckInTargetEnv);
 
         const variantStates: readonly LanguageVariantStateInTargetEnvironmentByCodename[] = await getVariantStatesAsync(
             config.migrationData.items
         );
 
-        const assetStates: readonly AssetStateInTargetEnvironmentByCodename[] = await getAssetStatesAsync(
-            assetCodenamesToCheckInTargetEnv
-        );
+        const assetStates: readonly AssetStateInTargetEnvironmentByCodename[] = await getAssetStatesAsync(assetCodenamesToCheckInTargetEnv);
 
         return {
             environmentData,
@@ -334,9 +340,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                 return findRequired(
                     itemStates,
                     (state) => state.itemCodename === itemCodename,
-                    `Invalid state for item '${chalk.red(
-                        itemCodename
-                    )}'. It is expected that all item states will be initialized`
+                    `Invalid state for item '${chalk.red(itemCodename)}'. It is expected that all item states will be initialized`
                 );
             },
             getLanguageVariantStateInTargetEnvironment: (itemCodename, languageCodename) => {
@@ -352,9 +356,7 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                 return findRequired(
                     assetStates,
                     (state) => state.assetCodename === assetCodename,
-                    `Invalid state for asset '${chalk.red(
-                        assetCodename
-                    )}'. It is expected that all asset states will be initialized`
+                    `Invalid state for asset '${chalk.red(assetCodename)}'. It is expected that all asset states will be initialized`
                 );
             },
             getElement: getElementByCodenames
