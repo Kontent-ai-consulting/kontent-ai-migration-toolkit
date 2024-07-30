@@ -181,7 +181,7 @@ function findTaxonomy(termId: string, taxonomy: Readonly<TaxonomyModels.Taxonomy
     }
 
     if (taxonomy.terms) {
-        const foundTerm = taxonomy.terms.find((term) => findTaxonomy(term.id, term));
+        const foundTerm = taxonomy.terms.find((term) => findTaxonomy(termId, term));
 
         if (foundTerm) {
             return foundTerm;

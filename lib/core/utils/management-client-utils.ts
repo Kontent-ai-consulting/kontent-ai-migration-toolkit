@@ -39,9 +39,7 @@ export function managementClientUtils(client: Readonly<ManagementClient>, logger
         return (await client.environmentInformation().toPromise()).data.project;
     };
 
-    const getAllLanguagesAsync = async (
-        logSpinner: LogSpinnerData
-    ): Promise<readonly LanguageModels.LanguageModel[]> => {
+    const getAllLanguagesAsync = async (logSpinner: LogSpinnerData): Promise<readonly LanguageModels.LanguageModel[]> => {
         return await runMapiRequestAsync({
             logSpinner: logSpinner,
             logger: logger,
@@ -51,9 +49,7 @@ export function managementClientUtils(client: Readonly<ManagementClient>, logger
         });
     };
 
-    const getAllCollectionsAsync = async (
-        logSpinner: LogSpinnerData
-    ): Promise<readonly CollectionModels.Collection[]> => {
+    const getAllCollectionsAsync = async (logSpinner: LogSpinnerData): Promise<readonly CollectionModels.Collection[]> => {
         return await runMapiRequestAsync({
             logger: logger,
             logSpinner: logSpinner,
@@ -121,7 +117,7 @@ export function managementClientUtils(client: Readonly<ManagementClient>, logger
                             codename: snippetElement.codename,
                             type: snippetElement.type,
                             id: snippetElement.id,
-                            element: element
+                            element: snippetElement
                         };
 
                         return flattenedElement;
@@ -139,9 +135,7 @@ export function managementClientUtils(client: Readonly<ManagementClient>, logger
             .filter(isNotUndefined);
     };
 
-    const getFlattenedContentTypesAsync = async (
-        logSpinner: LogSpinnerData
-    ): Promise<readonly FlattenedContentType[]> => {
+    const getFlattenedContentTypesAsync = async (logSpinner: LogSpinnerData): Promise<readonly FlattenedContentType[]> => {
         const contentTypes = await runMapiRequestAsync({
             logger: logger,
             logSpinner: logSpinner,

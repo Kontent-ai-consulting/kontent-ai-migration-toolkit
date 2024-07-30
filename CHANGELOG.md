@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.4.0](https://github.com/Kontent-ai/kontent-ai-migration-toolkit/compare/v1.3.0...v1.4.0) (2024-07-30)
+
+
+### Features
+
+* updates deps & uses `changeWorkflowOfLanguageVariant` instead of deprecated `changeWorkflowStepOfLanguageVariant` ([6642938](https://github.com/Kontent-ai/kontent-ai-migration-toolkit/commit/6642938ba773560b372f30ee5160b6d72af46837))
+
+
+### Bug Fixes
+
+* Fixes mapping of taxonomy elements & correctly flatten snippet elements (fixes https://github.com/kontent-ai/kontent-ai-migration-toolkit/issues/5) ([838e0b2](https://github.com/Kontent-ai/kontent-ai-migration-toolkit/commit/838e0b260e1b001e52816b42e3288e6d3473b3b6))
+
 ## [1.3.0](https://github.com/Kontent-ai/kontent-ai-migration-toolkit/compare/v1.2.0...v1.3.0) (2024-07-18)
 
 
