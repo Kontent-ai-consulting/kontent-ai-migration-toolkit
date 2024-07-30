@@ -2,8 +2,12 @@ import { AssetModels, ContentItemModels, LanguageVariantModels } from '@kontent-
 import {
     AssetStateInTargetEnvironmentByCodename,
     ItemStateInTargetEnvironmentByCodename,
+    LanguageVariantSchedulesStateValues,
+    LanguageVariantStateData,
     LanguageVariantStateInTargetEnvironmentByCodename,
     LanguageVariantWorkflowState,
+    LanguageVariantWorkflowStateValues,
+    LogSpinnerData,
     MigrationItem,
     WorkflowStep,
     findRequired,
@@ -19,7 +23,8 @@ import { ExtractItemByCodename, itemsExtractionProcessor } from '../../translati
 import chalk from 'chalk';
 
 interface LanguageVariantWrapper {
-    readonly languageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant>;
+    readonly draftLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
+    readonly publishedLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
     readonly migrationItem: MigrationItem;
 }
 
@@ -75,6 +80,69 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         return getFlattenedElement;
     };
 
+    const getDraftLanguageVariantAsync = async (
+        logSpinner: LogSpinnerData,
+        migrationItem: MigrationItem
+    ): Promise<Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined> => {
+        try {
+            const draftLanguageVariant = await runMapiRequestAsync({
+                logger: config.logger,
+                func: async () =>
+                    (
+                        await config.managementClient
+                            .viewLanguageVariant()
+                            .byItemCodename(migrationItem.system.codename)
+                            .byLanguageCodename(migrationItem.system.language.codename)
+                            .toPromise()
+                    ).data,
+                action: 'view',
+                type: 'languageVariant',
+                logSpinner: logSpinner,
+                itemName: `draft -> codename -> ${migrationItem.system.codename} (${migrationItem.system.language.codename})`
+            });
+
+            return draftLanguageVariant;
+        } catch (error) {
+            if (!is404Error(error)) {
+                throw error;
+            }
+
+            return undefined;
+        }
+    };
+
+    const getPublishedLanguageVariantAsync = async (
+        logSpinner: LogSpinnerData,
+        migrationItem: MigrationItem
+    ): Promise<Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined> => {
+        try {
+            const draftLanguageVariant = await runMapiRequestAsync({
+                logger: config.logger,
+                func: async () =>
+                    (
+                        await config.managementClient
+                            .viewLanguageVariant()
+                            .byItemCodename(migrationItem.system.codename)
+                            .byLanguageCodename(migrationItem.system.language.codename)
+                            .published()
+                            .toPromise()
+                    ).data,
+                action: 'view',
+                type: 'languageVariant',
+                logSpinner: logSpinner,
+                itemName: `published -> codename -> ${migrationItem.system.codename} (${migrationItem.system.language.codename})`
+            });
+
+            return draftLanguageVariant;
+        } catch (error) {
+            if (!is404Error(error)) {
+                throw error;
+            }
+
+            return undefined;
+        }
+    };
+
     const getLanguageVariantsAsync = async (migrationItems: readonly MigrationItem[]): Promise<readonly LanguageVariantWrapper[]> => {
         return (
             await processItemsAsync<MigrationItem, LanguageVariantWrapper | undefined>({
@@ -89,34 +157,15 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                     };
                 },
                 processAsync: async (item, logSpinner) => {
-                    try {
-                        const languageVariant = await runMapiRequestAsync({
-                            logger: config.logger,
-                            func: async () =>
-                                (
-                                    await config.managementClient
-                                        .viewLanguageVariant()
-                                        .byItemCodename(item.system.codename)
-                                        .byLanguageCodename(item.system.language.codename)
-                                        .toPromise()
-                                ).data,
-                            action: 'view',
-                            type: 'languageVariant',
-                            logSpinner: logSpinner,
-                            itemName: `codename -> ${item.system.codename} (${item.system.language.codename})`
-                        });
+                    const draftLanguageVariant = await getDraftLanguageVariantAsync(logSpinner, item);
 
-                        return {
-                            languageVariant: languageVariant,
-                            migrationItem: item
-                        };
-                    } catch (error) {
-                        if (!is404Error(error)) {
-                            throw error;
-                        }
-
-                        return undefined;
-                    }
+                    return {
+                        migrationItem: item,
+                        draftLanguageVariant: draftLanguageVariant,
+                        publishedLanguageVariant: draftLanguageVariant
+                            ? await getPublishedLanguageVariantAsync(logSpinner, item)
+                            : undefined
+                    };
                 }
             })
         ).filter(isNotUndefined);
@@ -194,6 +243,31 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         ).filter(isNotUndefined);
     };
 
+    const getVariantState = (languageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant>): LanguageVariantStateData => {
+        const variantWorkflowId = languageVariant.workflow.workflowIdentifier.id;
+        const variantStepId = languageVariant.workflow.stepIdentifier.id;
+        const { workflow, step } = workflowHelper(environmentData.workflows).getWorkflowAndStep({
+            workflowMatcher: {
+                errorMessage: `Could not workflow with id '${chalk.red(variantWorkflowId)}' in target project`,
+                match: (workflow) => workflow.id == variantWorkflowId
+            },
+            stepMatcher: {
+                errorMessage: `Could not workflow step with id '${chalk.red(variantStepId)}' in workflow '${chalk.yellow(
+                    variantWorkflowId
+                )}'`,
+                match: (step) => step.id == variantStepId
+            }
+        });
+
+        console.log(languageVariant.item.id, languageVariant.schedule, getWorkflowState(step, languageVariant));
+
+        return {
+            languageVariant: languageVariant,
+            workflow: workflow,
+            workflowState: getWorkflowState(step, languageVariant)
+        };
+    };
+
     const getVariantStatesAsync = async (
         migrationItems: readonly MigrationItem[]
     ): Promise<readonly LanguageVariantStateInTargetEnvironmentByCodename[]> => {
@@ -206,27 +280,11 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
                     m.migrationItem.system.language === migrationItem.system.language
             );
 
-            const variantWorkflowId = variant?.languageVariant?.workflow?.workflowIdentifier?.id;
-            const variantStepId = variant?.languageVariant?.workflow?.stepIdentifier?.id;
-            const { workflow, step } = workflowHelper(environmentData.workflows).getWorkflowAndStep({
-                workflowMatcher: {
-                    errorMessage: `Could not workflow with id '${chalk.red(variantWorkflowId)}' in target project`,
-                    match: (workflow) => workflow.id == variantWorkflowId
-                },
-                stepMatcher: {
-                    errorMessage: `Could not workflow step with id '${chalk.red(variantStepId)}' in workflow '${chalk.yellow(
-                        variantWorkflowId
-                    )}'`,
-                    match: (step) => step.id == variantStepId
-                }
-            });
-
             return {
                 itemCodename: migrationItem.system.codename,
                 languageCodename: migrationItem.system.language.codename,
-                languageVariant: variant?.languageVariant,
-                workflow: workflow,
-                workflowState: getWorkflowState(step, variant?.languageVariant),
+                draftLanguageVariant: variant?.draftLanguageVariant ? getVariantState(variant.draftLanguageVariant) : undefined,
+                publishedLanguageVariant: variant?.publishedLanguageVariant ? getVariantState(variant.publishedLanguageVariant) : undefined,
                 state: variant ? 'exists' : 'doesNotExists'
             };
         });
@@ -237,27 +295,36 @@ export async function importContextFetcherAsync(config: ImportContextConfig) {
         variant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined
     ): LanguageVariantWorkflowState => {
         if (!variant) {
-            return 'n/a';
+            return undefined;
         }
 
         const helper = workflowHelper(environmentData.workflows);
 
-        // order of checks is important as scheduled publish / unpublish state
-        if (variant.schedule.publishTime && variant.schedule.publishDisplayTimezone) {
-            return 'scheduledPublish';
-        }
+        const getScheduledState = (): LanguageVariantSchedulesStateValues => {
+            if (variant.schedule.publishTime && variant.schedule.publishDisplayTimezone) {
+                return 'scheduledPublish';
+            }
 
-        if (variant.schedule.unpublishTime && variant.schedule.unpublishDisplayTimezone) {
-            return 'scheduledUnpublish';
-        }
+            if (variant.schedule.unpublishTime && variant.schedule.unpublishDisplayTimezone) {
+                return 'scheduledUnpublish';
+            }
+            return 'n/a';
+        };
 
-        if (helper.isPublishedStepByCodename(step.codename)) {
-            return 'published';
-        }
-        if (helper.isArchivedStepByCodename(step.codename)) {
-            return 'archived';
-        }
-        return 'draft';
+        const getWorkflowState = (): LanguageVariantWorkflowStateValues => {
+            if (helper.isPublishedStepByCodename(step.codename)) {
+                return 'published';
+            }
+            if (helper.isArchivedStepByCodename(step.codename)) {
+                return 'archived';
+            }
+            return 'draft';
+        };
+
+        return {
+            workflowState: getWorkflowState(),
+            scheduledState: getScheduledState()
+        };
     };
 
     const getItemStatesAsync = async (itemCodenames: ReadonlySet<string>): Promise<readonly ItemStateInTargetEnvironmentByCodename[]> => {

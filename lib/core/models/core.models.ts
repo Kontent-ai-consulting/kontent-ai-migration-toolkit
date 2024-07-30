@@ -35,7 +35,14 @@ export type MapiType =
     | 'binaryFile'
     | 'workflow';
 
-export type LanguageVariantWorkflowState = 'published' | 'archived' | 'scheduledPublish' | 'scheduledUnpublish' | 'draft' | 'n/a';
+export type LanguageVariantWorkflowStateValues = 'published' | 'archived' | 'draft' | 'scheduled';
+export type LanguageVariantSchedulesStateValues = 'scheduledPublish' | 'scheduledUnpublish' | 'n/a';
+export type LanguageVariantWorkflowState =
+    | {
+          readonly workflowState: LanguageVariantWorkflowStateValues;
+          readonly scheduledState: LanguageVariantSchedulesStateValues;
+      }
+    | undefined;
 
 export interface ItemInfo {
     readonly title: string;
@@ -79,13 +86,18 @@ export interface ItemStateInTargetEnvironmentByCodename {
     readonly externalIdToUse: string;
 }
 
+export interface LanguageVariantStateData {
+    readonly languageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
+    readonly workflow: Readonly<WorkflowModels.Workflow> | undefined;
+    readonly workflowState: LanguageVariantWorkflowState;
+}
+
 export interface LanguageVariantStateInTargetEnvironmentByCodename {
     readonly state: TargetItemState;
     readonly itemCodename: string;
     readonly languageCodename: string;
-    readonly languageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
-    readonly workflow: Readonly<WorkflowModels.Workflow> | undefined;
-    readonly workflowState: LanguageVariantWorkflowState;
+    readonly publishedLanguageVariant: LanguageVariantStateData | undefined;
+    readonly draftLanguageVariant: LanguageVariantStateData | undefined;
 }
 
 export interface AssetStateInTargetEnvironmentByCodename {

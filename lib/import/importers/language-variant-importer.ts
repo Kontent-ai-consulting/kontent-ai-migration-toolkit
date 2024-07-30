@@ -9,12 +9,14 @@ import {
     MigrationItemVersion,
     workflowHelper,
     findRequired,
-    LanguageVariantWorkflowState
+    LanguageVariantWorkflowState,
+    isNotUndefined,
+    LanguageVariantSchedulesStateValues
 } from '../../core/index.js';
 import chalk from 'chalk';
 import { ImportContext } from '../import.models.js';
 import { importTransforms } from '../../translation/index.js';
-import { workflowImporter } from './workflow-importer.js';
+import { workflowImporter as workflowImporterInit } from './workflow-importer.js';
 import { throwErrorForMigrationItem } from '../utils/import.utils.js';
 
 export function languageVariantImporter(config: {
@@ -23,6 +25,12 @@ export function languageVariantImporter(config: {
     readonly importContext: ImportContext;
     readonly client: Readonly<ManagementClient>;
 }) {
+    const workflowImporter = workflowImporterInit({
+        logger: config.logger,
+        managementClient: config.client,
+        workflows: config.importContext.environmentData.workflows
+    });
+
     const upsertLanguageVariantAsync = async (data: {
         readonly workflow: Readonly<WorkflowModels.Workflow>;
         readonly logSpinner: LogSpinnerData;
@@ -110,14 +118,12 @@ export function languageVariantImporter(config: {
             stepCodename: data.migrationItemVersion.workflow_step.codename
         });
 
-        // prepare target variant for upsert if it exists in target env
-        if (data.variantWorkflowState !== 'n/a') {
-            await prepareLanguageVariantForImportAsync({
-                logSpinner: data.logSpinner,
-                migrationItem: data.migrationItem,
-                variantWorkflowState: data.variantWorkflowState
-            });
-        }
+        // prepare language variant for import
+        await prepareLanguageVariantForImportAsync({
+            logSpinner: data.logSpinner,
+            migrationItem: data.migrationItem,
+            variantWorkflowState: data.variantWorkflowState
+        });
 
         // upsert language variant
         const languageVariant = await upsertLanguageVariantAsync({
@@ -129,11 +135,7 @@ export function languageVariantImporter(config: {
         });
 
         // set workflow accordingly (publish, move to workflow step, archive ...)
-        await workflowImporter({
-            logger: config.logger,
-            managementClient: config.client,
-            workflows: config.importContext.environmentData.workflows
-        }).setWorkflowOfLanguageVariantAsync({
+        await workflowImporter.setWorkflowOfLanguageVariantAsync({
             logSpinner: data.logSpinner,
             migrationItem: data.migrationItem,
             workflowCodename: workflow.codename,
@@ -151,124 +153,90 @@ export function languageVariantImporter(config: {
     ): Promise<readonly LanguageVariantModels.ContentItemLanguageVariant[]> => {
         const { draftVersion, publishedVersion } = categorizeVersions(migrationItem);
 
-        let publishedLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
-        let draftLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined;
-
         // get initial state of language variant from target env
         const languageVariantState = config.importContext.getLanguageVariantStateInTargetEnvironment(
             migrationItem.system.codename,
             migrationItem.system.language.codename
         );
 
-        let lastVariantWorkflowState: LanguageVariantWorkflowState = languageVariantState.workflowState;
+        // cancel scheduled state for either published or draft version (only once for either of them)
+        const scheduledState =
+            languageVariantState.publishedLanguageVariant?.workflowState?.scheduledState ??
+            languageVariantState.draftLanguageVariant?.workflowState?.scheduledState;
+
+        if (scheduledState) {
+            await cancelScheduledStateAsync({
+                logSpinner,
+                migrationItem,
+                scheduledState
+            });
+        }
 
         // first import published version if it exists
-        if (publishedVersion) {
-            publishedLanguageVariant = await importVersionAsync({
-                logSpinner: logSpinner,
-                migrationItem: migrationItem,
-                preparedContentItem: preparedContentItem,
-                migrationItemVersion: publishedVersion,
-                variantWorkflowState: languageVariantState.workflowState
+        const publishedLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined = publishedVersion
+            ? await importVersionAsync({
+                  logSpinner: logSpinner,
+                  migrationItem: migrationItem,
+                  preparedContentItem: preparedContentItem,
+                  migrationItemVersion: publishedVersion,
+                  variantWorkflowState:
+                      languageVariantState.publishedLanguageVariant?.workflowState ??
+                      languageVariantState.draftLanguageVariant?.workflowState
+              })
+            : undefined;
+
+        let draftVariantWorkflowStep: LanguageVariantWorkflowState | undefined = languageVariantState.draftLanguageVariant?.workflowState;
+
+        // if target env contains published version & imported version not, unpublish it from the target env
+        if (languageVariantState.publishedLanguageVariant && !publishedVersion) {
+            await workflowImporter.unpublishLanguageVariantAsync({
+                logSpinner,
+                migrationItem
+            });
+            await workflowImporter.moveToDraftStepAsync({
+                logSpinner,
+                migrationItem
             });
 
-            // set last published workflow step to publish as language variant has just been published in target environment
-            lastVariantWorkflowState = 'published';
+            // override draft state as it was unpublished & moved to draft
+            draftVariantWorkflowStep = {
+                scheduledState: 'n/a',
+                workflowState: 'draft'
+            };
         }
 
-        if (draftVersion) {
-            draftLanguageVariant = await importVersionAsync({
-                logSpinner: logSpinner,
-                migrationItem: migrationItem,
-                preparedContentItem: preparedContentItem,
-                migrationItemVersion: draftVersion,
-                variantWorkflowState: lastVariantWorkflowState
-            });
-        }
+        const draftLanguageVariant: Readonly<LanguageVariantModels.ContentItemLanguageVariant> | undefined = draftVersion
+            ? await importVersionAsync({
+                  logSpinner: logSpinner,
+                  migrationItem: migrationItem,
+                  preparedContentItem: preparedContentItem,
+                  migrationItemVersion: draftVersion,
+                  variantWorkflowState: draftVariantWorkflowStep
+              })
+            : undefined;
 
-        return [...(publishedLanguageVariant ? [publishedLanguageVariant] : []), ...(draftLanguageVariant ? [draftLanguageVariant] : [])];
+        return [publishedLanguageVariant, draftLanguageVariant].filter(isNotUndefined);
     };
 
-    const createNewVersionOfLanguageVariantAsync = async (logSpinner: LogSpinnerData, migrationItem: MigrationItem): Promise<void> => {
-        await runMapiRequestAsync({
-            logger: config.logger,
-            func: async () => {
-                await config.client
-                    .createNewVersionOfLanguageVariant()
-                    .byItemCodename(migrationItem.system.codename)
-                    .byLanguageCodename(migrationItem.system.language.codename)
-                    .toPromise();
-            },
-            action: 'createNewVersion',
-            type: 'languageVariant',
-            logSpinner: logSpinner,
-            itemName: `${migrationItem.system.codename} (${migrationItem.system.language.codename})`
-        });
-    };
+    const cancelScheduledStateAsync = async (data: {
+        readonly logSpinner: LogSpinnerData;
+        readonly migrationItem: MigrationItem;
+        readonly scheduledState: LanguageVariantSchedulesStateValues;
+    }): Promise<void> => {
+        const changeWorkflowData = {
+            logSpinner: data.logSpinner,
+            migrationItem: data.migrationItem
+        };
 
-    const cancelScheduledPublishAsync = async (logSpinner: LogSpinnerData, migrationItem: MigrationItem): Promise<void> => {
-        await runMapiRequestAsync({
-            logger: config.logger,
-            func: async () => {
-                await config.client
-                    .cancelSheduledPublishingOfLanguageVariant()
-                    .byItemCodename(migrationItem.system.codename)
-                    .byLanguageCodename(migrationItem.system.language.codename)
-                    .toPromise();
-            },
-            action: 'cancelScheduledPublish',
-            type: 'languageVariant',
-            logSpinner: logSpinner,
-            itemName: `${migrationItem.system.codename} (${migrationItem.system.language.codename}) -> Cancel scheduled publish`
-        });
-    };
-
-    const cancelScheduledUnpublishAsync = async (logSpinner: LogSpinnerData, migrationItem: MigrationItem): Promise<void> => {
-        await runMapiRequestAsync({
-            logger: config.logger,
-            func: async () => {
-                await config.client
-                    .cancelSheduledUnpublishingOfLanguageVariant()
-                    .byItemCodename(migrationItem.system.codename)
-                    .byLanguageCodename(migrationItem.system.language.codename)
-                    .toPromise();
-            },
-            action: 'cancelScheduledUnpublish',
-            type: 'languageVariant',
-            logSpinner: logSpinner,
-            itemName: `${migrationItem.system.codename} (${migrationItem.system.language.codename}) -> Cancel scheduled unpublish`
-        });
-    };
-
-    const moveToDraftStepAsync = async (logSpinner: LogSpinnerData, migrationItem: MigrationItem): Promise<void> => {
-        const workflow = workflowHelper(config.importContext.environmentData.workflows).getWorkflowByCodename(
-            migrationItem.system.workflow.codename
-        );
-        const firstWorkflowStep = workflow.steps?.[0];
-
-        if (firstWorkflowStep) {
-            await runMapiRequestAsync({
-                logger: config.logger,
-                func: async () => {
-                    await config.client
-                        .changeWorkflowOfLanguageVariant()
-                        .byItemCodename(migrationItem.system.codename)
-                        .byLanguageCodename(migrationItem.system.language.codename)
-                        .withData({
-                            workflow_identifier: {
-                                codename: workflow.codename
-                            },
-                            step_identifier: {
-                                codename: firstWorkflowStep.codename
-                            }
-                        })
-                        .toPromise();
-                },
-                action: 'changeWorkflowStep',
-                type: 'languageVariant',
-                logSpinner: logSpinner,
-                itemName: `${migrationItem.system.codename} (${migrationItem.system.language.codename}) -> ${firstWorkflowStep.codename}`
-            });
+        switch (data.scheduledState) {
+            case 'scheduledPublish':
+                // cancel scheduled publish if language variant is scheduled to be published
+                await workflowImporter.cancelScheduledPublishAsync(changeWorkflowData);
+                break;
+            case 'scheduledUnpublish':
+                // cancel scheduled unpublish if language variant is scheduled to be unpublished
+                await workflowImporter.cancelScheduledUnpublishAsync(changeWorkflowData);
+                break;
         }
     };
 
@@ -277,25 +245,24 @@ export function languageVariantImporter(config: {
         readonly migrationItem: MigrationItem;
         readonly variantWorkflowState: LanguageVariantWorkflowState;
     }): Promise<void> => {
-        switch (data.variantWorkflowState) {
+        if (!data.variantWorkflowState) {
+            // no need to prepare language variant as it doesn't exist in target environment
+            return;
+        }
+
+        const changeWorkflowData = {
+            logSpinner: data.logSpinner,
+            migrationItem: data.migrationItem
+        };
+
+        switch (data.variantWorkflowState.workflowState) {
             case 'published':
                 // create new version if language variant is published
-                await createNewVersionOfLanguageVariantAsync(data.logSpinner, data.migrationItem);
+                await workflowImporter.createNewVersionOfLanguageVariantAsync(changeWorkflowData);
                 break;
             case 'archived':
                 // move to draft step if language variant is archived
-                await moveToDraftStepAsync(data.logSpinner, data.migrationItem);
-                break;
-            case 'scheduledPublish':
-                // cancel scheduled publish if language variant is scheduled to be published
-                await cancelScheduledPublishAsync(data.logSpinner, data.migrationItem);
-                break;
-            case 'scheduledUnpublish':
-                // cancel scheduled unpublish if language variant is scheduled to be unpublished
-                await cancelScheduledUnpublishAsync(data.logSpinner, data.migrationItem);
-
-                // and also unpublish it
-                await unpubli(data.logSpinner, data.migrationItem);
+                await workflowImporter.moveToDraftStepAsync(changeWorkflowData);
                 break;
         }
     };
